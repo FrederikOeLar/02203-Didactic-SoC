@@ -134,3 +134,42 @@ module pixel_acc #(
         pixel_out = ~ibuf_rd_data;  // TASK 0: invert all pixels
     end
 endmodule
+
+
+// ============================================================
+//  sobel_pixel - computes one output pixel from a 3x3 window
+//  I scaled the output value by 1/8, im not sure I was supposed to do that or clamp to 255 (max)
+//
+// ============================================================
+module sobel_pixel (
+    input  logic [2:0][2:0][7:0] win,   // win[row][col]
+    output logic [7:0]           pix_out
+);
+
+    // Widen to signed 11-bit so the full range -1020..+1020 fits.
+    logic signed [10:0] p [3][3];
+    logic signed [10:0] dx, dy;
+    logic        [10:0] abs_dx, abs_dy;
+    logic        [11:0] d;
+
+    always_comb begin
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                p[r][c] = signed'({3'b000, win[r][c]});
+
+        dx = (p[0][2] - p[0][0])
+           + ((p[1][2] - p[1][0]) <<< 1)
+           + (p[2][2] - p[2][0]);
+
+        dy = (p[0][0] - p[2][0])
+           + ((p[0][1] - p[2][1]) <<< 1)
+           + (p[0][2] - p[2][2]);
+
+        abs_dx = dx[10] ? 11'(-dx) : 11'(dx);
+        abs_dy = dy[10] ? 11'(-dy) : 11'(dy);
+
+        d       = abs_dx + abs_dy;     // max 2040
+        pix_out = d[10:3];             // divide by 8 -> max 255
+    end
+
+endmodule
