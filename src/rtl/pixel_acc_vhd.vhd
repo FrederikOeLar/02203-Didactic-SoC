@@ -66,7 +66,7 @@ architecture rtl of pixel_acc_vhd is
   -- BRAM has 1-cycle read latency, so:
   --   cycle 0: read ibuf[0] issued  (rd_data not yet valid)
   --   cycle 1: read ibuf[1] issued, ibuf[0] data valid -> write obuf[0]
-  --   ...
+  --   ....
   --   cycle N: read ibuf[N] issued (last), write obuf[N-1]
   --   cycle N+1: no new read, write obuf[N], assert finish
   --
