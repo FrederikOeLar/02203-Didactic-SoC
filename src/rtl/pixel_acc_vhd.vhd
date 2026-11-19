@@ -1,35 +1,34 @@
-/*
-  Contributors:
-    * Dovydas Liutkus (dovli@dtu.dk)
-  Description:
-    * pixel_acc - STUDENT MODULE (VHDL version)
-    * Drop-in VHDL equivalent of pixel_acc.sv. Instantiated by the
-    * SystemVerilog wrapper pixel_acc_vhd_wrapper.sv (module pixel_acc).
-    *
-    * You are given direct read access to ibuf and write access
-    * to obuf. Both are synchronous BRAMs with 1-cycle read latency.
-    *
-    * Interface:
-    *   start  - pulsed high for 1 cycle to begin processing
-    *   finish - assert high for 1 cycle when all output words
-    *            have been written to obuf
-    *
-    * ibuf read port:
-    *   Set ibuf_rd_en='1' and ibuf_rd_addr to the word you want.
-    *   ibuf_rd_data is valid on the NEXT clock cycle.
-    *
-    * obuf write port:
-    *   Set obuf_wr_en='1', obuf_wr_addr, obuf_wr_data on the same cycle.
-    *   The word is written on the rising edge.
-    *
-    * Generics:
-    *   BUF_AW    - address width (ibuf/obuf have 2^BUF_AW words)
-    *   BUF_DEPTH - total number of words in each buffer
-    *   IMG_WIDTH - frame width in words (= pixels per row / 4)
-    *
-    * NOTE: VHDL-2008 (vcom -2008). Entity name differs from pixel_acc
-    * so it can share a library with the SystemVerilog wrapper.
-*/
+--  Contributors:
+--     Dovydas Liutkus (dovli@dtu.dk)
+--  Description:
+--     pixel_acc - STUDENT MODULE (VHDL version)
+--     Drop-in VHDL equivalent of pixel_acc.sv. Instantiated by the
+--     SystemVerilog wrapper pixel_acc_vhd_wrapper.sv (module pixel_acc).
+--    
+--     You are given direct read access to ibuf and write access
+--     to obuf. Both are synchronous BRAMs with 1-cycle read latency.
+--    
+--     Interface:
+--       start  - pulsed high for 1 cycle to begin processing
+--       finish - assert high for 1 cycle when all output words
+--                have been written to obuf
+--    
+--     ibuf read port:
+--       Set ibuf_rd_en='1' and ibuf_rd_addr to the word you want.
+--       ibuf_rd_data is valid on the NEXT clock cycle.
+--    
+--     obuf write port:
+--       Set obuf_wr_en='1', obuf_wr_addr, obuf_wr_data on the same cycle.
+--       The word is written on the rising edge.
+--    
+--     Generics:
+--       BUF_AW    - address width (ibuf/obuf have 2^BUF_AW words)
+--       BUF_DEPTH - total number of words in each buffer
+--       IMG_WIDTH - frame width in words (= pixels per row / 4)
+--    
+--     NOTE: VHDL-2008 (vcom -2008). Entity name differs from pixel_acc
+--     so it can share a library with the SystemVerilog wrapper.
+
 
 library ieee;
 use ieee.std_logic_1164.all;
