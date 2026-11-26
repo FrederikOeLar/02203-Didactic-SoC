@@ -73,7 +73,12 @@ PIXEL_ACC_SV  = ../src/rtl/pixel_acc.sv
 WAVE_SS       = wave_ss.do
 else ifeq ($(ACC_LANG),vhdl)
 PIXEL_ACC_SV  = ../src/rtl/pixel_acc_vhd_wrapper.sv
-PIXEL_ACC_VHD = ../src/rtl/pixel_acc_vhd.vhd
+PIXEL_ACC_VHD = \
+	../src/rtl/types.vhd \
+	../src/rtl/window.vhd \
+	../src/rtl/Out_Buf.vhd \
+	../src/rtl/Pix_Calc.vhd \
+	../src/rtl/pixel_acc_vhd.vhd
 WAVE_SS       = wave_ss_vhdl.do
 else
 $(error ACC_LANG must be 'sv' or 'vhdl', got '$(ACC_LANG)')

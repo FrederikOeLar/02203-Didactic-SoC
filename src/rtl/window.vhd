@@ -24,8 +24,8 @@ entity window is
         shift_en    : in  std_logic;    -- shift a new column into the window
         dir         : in  std_logic;    -- '0' = moving right (left shift), '1' = moving left (right shift)
 
-        row_cnt     : in std_logic_vector(15 downto 0);
-        col_cnt     : in std_logic_vector(15 downto 0);
+        row_cnt     : in std_logic_vector(14 downto 0);
+        col_cnt     : in std_logic_vector(14 downto 0);
         mem_buf_0   : in std_logic_vector(31 downto 0);
         mem_buf_1   : in std_logic_vector(31 downto 0);
         mem_input   : in std_logic_vector(31 downto 0);
@@ -67,7 +67,7 @@ begin
     process(clk)
     begin
         if rising_edge(clk) then
-            if reset = '1' then
+            if reset = '0' then
                 pixel_buffer <= (others => (others => '0'));
             elsif shift_en = '1' then
                 if dir = '0' then -- left shifting (moving right, even rows)

@@ -63,23 +63,23 @@ end entity pixel_acc_vhd;
 
 architecture rtl of pixel_acc_vhd is
 
-    constant WORDS_PER_ROW : std_logic_vector(15 downto 0) := 16x"58";   -- 352/4 = 88
-    constant LAST_COL      : std_logic_vector(15 downto 0) := 16x"57";   -- 87
-    constant LAST_ROW      : std_logic_vector(15 downto 0) := 16x"62A8"; -- 287 * 88
-    constant IMG_WORDS     : std_logic_vector(15 downto 0) := 16x"6300"; -- 288 * 88
+    constant WORDS_PER_ROW : std_logic_vector(BUF_AW-1 downto 0) := 15x"58";   -- 352/4 = 88
+    constant LAST_COL      : std_logic_vector(BUF_AW-1 downto 0) := 15x"57";   -- 87
+    constant LAST_ROW      : std_logic_vector(BUF_AW-1 downto 0) := 15x"62A8"; -- 287 * 88
+    constant IMG_WORDS     : std_logic_vector(BUF_AW-1 downto 0) := 15x"6300"; -- 288 * 88
 
-    signal col_cnt : std_logic_vector(15 downto 0);
-    signal row_cnt : std_logic_vector(15 downto 0); -- already multiplied by 88
+    signal col_cnt : std_logic_vector(BUF_AW-1 downto 0);
+    signal row_cnt : std_logic_vector(BUF_AW-1 downto 0); -- already multiplied by 88
 
-    signal col_cnt_add : std_logic_vector(15 downto 0);
-    signal row_cnt_add : std_logic_vector(15 downto 0);
+    signal col_cnt_add : std_logic_vector(BUF_AW-1 downto 0);
+    signal row_cnt_add : std_logic_vector(BUF_AW-1 downto 0);
     signal cnt_clr     : std_logic;
 
     -- Line buffer (memory) signals
     signal mem_read_data_0 : std_logic_vector(31 downto 0);
     signal mem_read_data_1 : std_logic_vector(31 downto 0);
     signal mem_write_data  : std_logic_vector(31 downto 0);
-    signal mem_write_addr  : std_logic_vector(15 downto 0);
+    signal mem_write_addr  : std_logic_vector(BUF_AW-1 downto 0);
     signal mem_we_0        : std_logic_vector(1 downto 0); -- Shift register to delay write enable signal for one cycle
     signal mem_we_1        : std_logic_vector(1 downto 0); -- Shift register to delay write enable signal for one cycle
     signal buf_re          : std_logic;                    -- read both line buffers
@@ -221,7 +221,7 @@ begin
                 next_state <= SNAKE_LEFT;
 
             when SNAKE_LEFT => -- odd rows, right to left
-                if (col_cnt = 16x"0") then
+                if (col_cnt = 15x"0") then
                     next_state <= SNAKE_DOWN_0;
                 end if;
 
@@ -269,8 +269,7 @@ begin
         mem_we_1(0)    <= '0';
         buf_re         <= '0';
         mem_write_data <= ibuf_rd_data;
-        en             <= '0';
-        we             <= '0';
+        ibuf_rd_en     <= '0';
         finish         <= '0';
         out_buf_re     <= '0';
         out_buf_en     <= '0';
@@ -285,10 +284,10 @@ begin
 
             when INIT_FIRST => -- read row 0 into buffer 0, no output yet
                 if col_cnt /= LAST_COL then
-                    col_cnt_add <= 16x"1";
+                    col_cnt_add <= 15x"1";
                 end if;
                 mem_we_0(0) <= '1';
-                en          <= '1';
+                ibuf_rd_en  <= '1';
                 buf_re      <= '1';
                 win_shift   <= '1';
                 win_dir     <= '0';
@@ -299,11 +298,12 @@ begin
                 win_dir     <= '0';
 
             when SNAKE_LEFT => -- read odd row into buffer 1
-                if col_cnt /= 16x"0" then
+                if col_cnt /= 15x"0" then
                     col_cnt_add <= (others => '1'); -- negative 1
                 end if;
                 mem_we_1(0) <= '1';
-                en          <= '1';
+                ibuf_rd_en  <= '1';
+                --out_buf_en  <= '1';
                 buf_re      <= '1';
                 win_shift   <= '1';
                 win_dir     <= '1';
@@ -316,20 +316,20 @@ begin
                 row_cnt_add <= WORDS_PER_ROW;
                 win_shift   <= '1';
                 win_dir     <= '1';
-                centre_col  <= 16x"0";
+                centre_col  <= 15x"0";
                 out_buf_en  <= '1';
 
             when SNAKE_RIGHT => -- read even row into buffer 0
                 if col_cnt /= LAST_COL then
-                    col_cnt_add <= 16x"1";
+                    col_cnt_add <= 15x"1";
                 end if;
                 mem_we_0(0) <= '1';
-                en          <= '1';
+                ibuf_rd_en  <= '1';
                 buf_re      <= '1';
                 win_shift   <= '1';
                 win_dir     <= '0';
                 centre_col  <= std_logic_vector(unsigned(col_cnt) - 1);
-                if col_cnt /= 16x"0" then -- first word of the row has no centre yet
+                if col_cnt /= 15x"0" then -- first word of the row has no centre yet
                     out_buf_en <= '1';
                 end if;
 
@@ -342,13 +342,13 @@ begin
 
             when END_CALC => -- only the line buffers (rows 286, 287), bottom row replicated by the window
                 if col_cnt /= LAST_COL then
-                    col_cnt_add <= 16x"1";
+                    col_cnt_add <= 15x"1";
                 end if;
                 buf_re      <= '1';
                 win_shift   <= '1';
                 win_dir     <= '0';
                 centre_col  <= std_logic_vector(unsigned(col_cnt) - 1);
-                if col_cnt /= 16x"0" then
+                if col_cnt /= 15x"0" then
                     out_buf_en <= '1';
                 end if;
 
@@ -368,11 +368,11 @@ begin
     end process;
 
     addr_re <= std_logic_vector(unsigned(col_cnt) + unsigned(row_cnt)); -- row_cnt is already multiplied by 88
-    addr_we <= std_logic_vector(unsigned(trans_cnt) + 16x"62FF");
-    dataW <= data_buf;
+    addr_we <= std_logic_vector(unsigned(trans_cnt) + 15x"62FF");
+    --dataW <= data_buf;
 
     -- Connecting the memory ports
-    ibuf_rd_en <= en;
+    --ibuf_rd_en connected elsewhere
     ibuf_rd_addr <= addr_re;
     --ibuf_rd_data connected elsewhere
 
