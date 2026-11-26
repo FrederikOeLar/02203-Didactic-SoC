@@ -33,165 +33,422 @@
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
+use work.types.all;
 
 entity pixel_acc_vhd is
-  generic (
-    BUF_AW    : integer := 15;
-    BUF_DEPTH : integer := 25344;
-    IMG_WIDTH : integer := 88       -- 352 pixels / 4 pixels-per-word
-  );
-  port (
-    clk          : in  std_logic;
-    rst_n        : in  std_logic;
+    generic (
+        BUF_AW    : integer := 15;
+        BUF_DEPTH : integer := 25344;
+        IMG_WIDTH : integer := 88       -- 352 pixels / 4 pixels-per-word
+    );
+    port (
+        clk          : in  std_logic;
+        rst_n        : in  std_logic;
 
-    -- ibuf read port
-    ibuf_rd_en   : out std_logic;
-    ibuf_rd_addr : out std_logic_vector(BUF_AW-1 downto 0);
-    ibuf_rd_data : in  std_logic_vector(31 downto 0);
+        -- ibuf read port
+        ibuf_rd_en   : out std_logic;
+        ibuf_rd_addr : out std_logic_vector(BUF_AW-1 downto 0);
+        ibuf_rd_data : in  std_logic_vector(31 downto 0);
 
-    -- obuf write port
-    obuf_wr_en   : out std_logic;
-    obuf_wr_addr : out std_logic_vector(BUF_AW-1 downto 0);
-    obuf_wr_data : out std_logic_vector(31 downto 0);
+        -- obuf write port
+        obuf_wr_en   : out std_logic;
+        obuf_wr_addr : out std_logic_vector(BUF_AW-1 downto 0);
+        obuf_wr_data : out std_logic_vector(31 downto 0);
 
-    -- handshake
-    start        : in  std_logic;
-    finish       : out std_logic
-  );
+        -- handshake
+        start        : in  std_logic;
+        finish       : out std_logic
+    );
 end entity pixel_acc_vhd;
 
 architecture rtl of pixel_acc_vhd is
 
-  -- ============================================================
-  -- BRAM has 1-cycle read latency, so:
-  --   cycle 0: read ibuf[0] issued  (rd_data not yet valid)
-  --   cycle 1: read ibuf[1] issued, ibuf[0] data valid -> write obuf[0]
-  --   ....
-  --   cycle N: read ibuf[N] issued (last), write obuf[N-1]
-  --   cycle N+1: no new read, write obuf[N], assert finish
-  --
-  -- ============================================================
+    constant WORDS_PER_ROW : std_logic_vector(15 downto 0) := 16x"58";   -- 352/4 = 88
+    constant LAST_COL      : std_logic_vector(15 downto 0) := 16x"57";   -- 87
+    constant LAST_ROW      : std_logic_vector(15 downto 0) := 16x"62A8"; -- 287 * 88
+    constant IMG_WORDS     : std_logic_vector(15 downto 0) := 16x"6300"; -- 288 * 88
 
-  type state_t is (IDLE, PROCESS_ST, DRAIN);  -- PROCESS is a VHDL keyword
+    signal col_cnt : std_logic_vector(15 downto 0);
+    signal row_cnt : std_logic_vector(15 downto 0); -- already multiplied by 88
 
-  signal state      : state_t;
-  signal rd_addr    : unsigned(BUF_AW-1 downto 0);  -- current ibuf read address
-  signal wr_addr    : unsigned(BUF_AW-1 downto 0);  -- current obuf write address (= rd_addr delayed 1 cycle)
-  signal pipe_valid : std_logic;                    -- '0' on first PROCESS cycle (rd_data not yet valid)
-  signal pixel_out  : std_logic_vector(31 downto 0);
+    signal col_cnt_add : std_logic_vector(15 downto 0);
+    signal row_cnt_add : std_logic_vector(15 downto 0);
+    signal cnt_clr     : std_logic;
+
+    -- Line buffer (memory) signals
+    signal mem_read_data_0 : std_logic_vector(31 downto 0);
+    signal mem_read_data_1 : std_logic_vector(31 downto 0);
+    signal mem_write_data  : std_logic_vector(31 downto 0);
+    signal mem_write_addr  : std_logic_vector(15 downto 0);
+    signal mem_we_0        : std_logic_vector(1 downto 0); -- Shift register to delay write enable signal for one cycle
+    signal mem_we_1        : std_logic_vector(1 downto 0); -- Shift register to delay write enable signal for one cycle
+    signal buf_re          : std_logic;                    -- read both line buffers
+    signal addr_re         : std_logic_vector(BUF_AW-1 downto 0);
+    signal addr_we         : std_logic_vector(BUF_AW-1 downto 0);
+
+    -- Window signals
+    signal win_shift       : std_logic;
+    signal win_shift_d     : std_logic;
+    signal win_dir         : std_logic;                    -- '0' = moving right, '1' = moving left
+    signal win_dir_d       : std_logic;
+    signal centre_row      : std_logic_vector(BUF_AW-1 downto 0); -- row * 88 of the word in the window centre
+    signal centre_row_d    : std_logic_vector(BUF_AW-1 downto 0);
+    signal centre_row_dd   : std_logic_vector(BUF_AW-1 downto 0);
+    signal centre_col      : std_logic_vector(BUF_AW-1 downto 0); -- word column of the word in the window centre
+    signal centre_col_d    : std_logic_vector(BUF_AW-1 downto 0);
+    signal centre_col_dd   : std_logic_vector(BUF_AW-1 downto 0);
+    signal window_pixels   : word_array_t;
+
+    -- Pixel calculators
+    type calc_in_t is array (0 to 3) of word_array_t;
+    signal calc_in         : calc_in_t;
+    signal pix_results     : std_logic_vector(31 downto 0);
+
+    -- Output buffer
+    signal addr_out_buf     : std_logic_vector(BUF_AW-1 downto 0);
+    signal out_buf_en       : std_logic;
+    signal out_buf_en_d     : std_logic;
+    signal out_buf_en_dd    : std_logic;
+    signal out_buf_en_ddd   : std_logic;
+    signal trans_cnt        : std_logic_vector(BUF_AW-1 downto 0);
+    signal trans_cnt_add    : std_logic_vector(BUF_AW-1 downto 0);
+    signal out_buf_re       : std_logic;
+    signal data_buf         : std_logic_vector(31 downto 0) := (others => '0');
+    signal buf_in           : std_logic_vector(31 downto 0);
+
+    -- FSM signals
+    type state_t is (IDLE, INIT_FIRST, INIT_JUMP, SNAKE_LEFT, SNAKE_DOWN_0, SNAKE_RIGHT, SNAKE_DOWN_1, END_CALC, END_JUMP, CALC_FINISH);
+    signal state, next_state : state_t;
+
+    ----------------------------------------------------------------
+    -- Cut the 3x3 neighbourhood of pixel j (0..3) of the centre word
+    -- out of the 3x3 word window. Ordering follows pix_calc:
+    -- per row right, centre, left; rows top to bottom.
+    ----------------------------------------------------------------
+    function pix_window(win : word_array_t; j : natural) return word_array_t is
+        variable strip : byte_array_t := (others => (others => '0')); -- uses 0..5
+        variable res   : word_array_t;
+    begin
+        for k in 0 to 2 loop
+            strip(0) := win(3 * k)(31 downto 24);           -- last pixel of left word
+            for p in 0 to 3 loop
+                strip(p + 1) := win(3 * k + 1)(8 * p + 7 downto 8 * p); -- centre word
+            end loop;
+            strip(5) := win(3 * k + 2)(7 downto 0);         -- first pixel of right word
+
+            res(3 * k + 0) := x"000000" & strip(j + 2);     -- right
+            res(3 * k + 1) := x"000000" & strip(j + 1);     -- centre
+            res(3 * k + 2) := x"000000" & strip(j);         -- left
+        end loop;
+        return res;
+    end function;
 
 begin
 
-  -- ---- FSM ----
-  fsm : process (clk, rst_n)
-  begin
-    if rst_n = '0' then
-      state      <= IDLE;
-      rd_addr    <= (others => '0');
-      wr_addr    <= (others => '0');
-      pipe_valid <= '0';
-      ibuf_rd_en <= '0';
-      obuf_wr_en <= '0';
-      finish     <= '0';
-    elsif rising_edge(clk) then
-      ibuf_rd_en <= '0';
-      obuf_wr_en <= '0';
-      finish     <= '0';
+    -- State registers
+    process (clk)
+    begin
+        if rising_edge(clk) then
+            if rst_n = '0' then
+                state <= IDLE;
+                col_cnt <= (others => '0');
+                row_cnt <= (others => '0');
+                trans_cnt <= (others => '0');
+                mem_we_0(1) <= '0';
+                mem_we_1(1) <= '0';
+                win_shift_d <= '0';
+                out_buf_en_d <= '0';
+                out_buf_en_dd <= '0';
+                out_buf_en_ddd <= '0';
+            else
 
-      case state is
-        when IDLE =>
-          pipe_valid <= '0';
-          if start = '1' then
-            rd_addr      <= (others => '0');
-            ibuf_rd_en   <= '1';
-            ibuf_rd_addr <= (others => '0');
-            state        <= PROCESS_ST;
-          end if;
+                -- Counters
+                if cnt_clr = '1' then
+                    col_cnt <= (others => '0');
+                    row_cnt <= (others => '0');
+                    trans_cnt <= (others => '0');
+                else
+                    col_cnt <= std_logic_vector(unsigned(col_cnt) + unsigned(col_cnt_add));
+                    row_cnt <= std_logic_vector(unsigned(row_cnt) + unsigned(row_cnt_add));
+                    trans_cnt <= std_logic_vector(unsigned(trans_cnt) + unsigned(trans_cnt_add));
+                end if;
 
-        when PROCESS_ST =>
-          pipe_valid <= '1';
-          wr_addr    <= rd_addr;  -- write address tracks read address with 1 cycle latency
+                -- Line buffers: write the word from memory one cycle after the read
+                mem_write_addr <= col_cnt;
+                mem_we_0(1) <= mem_we_0(0);
+                mem_we_1(1) <= mem_we_1(0);
 
-          -- Write result from previous read (suppressed on first cycle)
-          if pipe_valid = '1' then
-            obuf_wr_en   <= '1';
-            obuf_wr_addr <= std_logic_vector(wr_addr);
-            obuf_wr_data <= pixel_out;
-          end if;
+                -- Window: shift when the read data arrives (t+1)
+                win_shift_d <= win_shift;
+                win_dir_d   <= win_dir;
 
-          if rd_addr = to_unsigned(BUF_DEPTH - 1, BUF_AW) then
-            -- Last read issued - drain the pipeline
-            ibuf_rd_en <= '0';
-            state      <= DRAIN;
-          else
-            rd_addr      <= rd_addr + 1;
-            ibuf_rd_en   <= '1';
-            ibuf_rd_addr <= std_logic_vector(rd_addr + 1);
-          end if;
+                -- Centre position: valid when the window has shifted (t+2)
+                centre_row_d  <= centre_row;
+                centre_row_dd <= centre_row_d;
+                centre_col_d  <= centre_col;
+                centre_col_dd <= centre_col_d;
 
-        when DRAIN =>
-          -- Write the last word (pipeline had one word in flight)
-          obuf_wr_en   <= '1';
-          obuf_wr_addr <= std_logic_vector(wr_addr);
-          obuf_wr_data <= pixel_out;
-          finish       <= '1';
-          state        <= IDLE;
-      end case;
-    end if;
-  end process fsm;
+                -- Output buffer: register result and address (t+3)
+                out_buf_en_d   <= out_buf_en;
+                out_buf_en_dd  <= out_buf_en_d;
+                out_buf_en_ddd <= out_buf_en_dd;
+                buf_in         <= pix_results;
+                addr_out_buf   <= std_logic_vector(unsigned(centre_row_dd) + unsigned(centre_col_dd));
 
-  pixel_out <= not ibuf_rd_data;  -- TASK 0: invert all pixels
+                state <= next_state;
 
-end architecture rtl;
+            end if;
+        end if;
+    end process;
 
+    process(all)
+    begin
+        -- Default next state
+        next_state <= state;
 
--- ============================================================
---  sobel_pixel - computes one output pixel from a 3x3 window
---  I scaled the output value by 1/8, im not sure I was supposed to do that or clamp to 255 (max)
---
--- ============================================================
+        case state is
+            when IDLE =>
+                if start = '1' then
+                    next_state <= INIT_FIRST;
+                end if;
 
-library ieee;
-use ieee.std_logic_1164.all;
-use ieee.numeric_std.all;
+            when INIT_FIRST => -- row 0, left to right
+                if (col_cnt = LAST_COL) then
+                    next_state <= INIT_JUMP;
+                end if;
 
-entity sobel_pixel is
-  port (
-    win     : in  std_logic_vector(71 downto 0);
-    pix_out : out std_logic_vector(7 downto 0)
-  );
-end entity sobel_pixel;
+            when INIT_JUMP =>
+                next_state <= SNAKE_LEFT;
 
-architecture rtl of sobel_pixel is
-begin
+            when SNAKE_LEFT => -- odd rows, right to left
+                if (col_cnt = 16x"0") then
+                    next_state <= SNAKE_DOWN_0;
+                end if;
 
-  calc : process (win)
-    -- Widen to signed 11-bit so the full range -1020..+1020 fits.
-    type win_t is array (0 to 2, 0 to 2) of signed(10 downto 0);
-    variable p              : win_t;
-    variable dx, dy         : signed(10 downto 0);
-    variable abs_dx, abs_dy : unsigned(10 downto 0);
-    variable d              : unsigned(11 downto 0);
-  begin
-    for r in 0 to 2 loop
-      for c in 0 to 2 loop
-        p(r, c) := signed("000" & win((r*3 + c)*8 + 7 downto (r*3 + c)*8));
-      end loop;
-    end loop;
+            when SNAKE_DOWN_0 =>
+                if (row_cnt = LAST_ROW) then -- if last row
+                    next_state <= END_CALC;
+                else
+                    next_state <= SNAKE_RIGHT;
+                end if;
 
-    dx := (p(0, 2) - p(0, 0))
-        + shift_left(p(1, 2) - p(1, 0), 1)
-        + (p(2, 2) - p(2, 0));
+            when SNAKE_RIGHT => -- even rows, left to right
+                if (col_cnt = LAST_COL) then
+                    next_state <= SNAKE_DOWN_1;
+                end if;
 
-    dy := (p(0, 0) - p(2, 0))
-        + shift_left(p(0, 1) - p(2, 1), 1)
-        + (p(0, 2) - p(2, 2));
+            when SNAKE_DOWN_1 =>
+                next_state <= SNAKE_LEFT;
 
-    abs_dx := unsigned(abs(dx));
-    abs_dy := unsigned(abs(dy));
+            when END_CALC => -- extra pass centred on row 287, left to right
+                if (col_cnt = LAST_COL) then
+                    next_state <= END_JUMP;
+                end if;
 
-    d       := resize(abs_dx, 12) + resize(abs_dy, 12);  -- max 2040
-    pix_out <= std_logic_vector(d(10 downto 3));          -- divide by 8 -> max 255
-  end process calc;
+            when END_JUMP =>
+                next_state <= CALC_FINISH;
 
-end architecture rtl;
+            when CALC_FINISH =>
+                next_state <= IDLE;
+
+            when others =>
+                next_state <= IDLE;
+
+        end case;
+    end process;
+
+    -- Output assignment
+    process(all)
+    begin
+
+        col_cnt_add    <= (others => '0');
+        row_cnt_add    <= (others => '0');
+        trans_cnt_add  <= (others => '0');
+        cnt_clr        <= '0';
+        mem_we_0(0)    <= '0';
+        mem_we_1(0)    <= '0';
+        buf_re         <= '0';
+        mem_write_data <= ibuf_rd_data;
+        en             <= '0';
+        we             <= '0';
+        finish         <= '0';
+        out_buf_re     <= '0';
+        out_buf_en     <= '0';
+        win_shift      <= '0';
+        win_dir        <= '0';
+        centre_row     <= std_logic_vector(unsigned(row_cnt) - unsigned(WORDS_PER_ROW)); -- window is one row behind
+        centre_col     <= col_cnt;
+
+        case state is
+            when IDLE =>
+                cnt_clr <= '1';
+
+            when INIT_FIRST => -- read row 0 into buffer 0, no output yet
+                if col_cnt /= LAST_COL then
+                    col_cnt_add <= 16x"1";
+                end if;
+                mem_we_0(0) <= '1';
+                en          <= '1';
+                buf_re      <= '1';
+                win_shift   <= '1';
+                win_dir     <= '0';
+
+            when INIT_JUMP =>
+                row_cnt_add <= WORDS_PER_ROW;
+                win_shift   <= '1';
+                win_dir     <= '0';
+
+            when SNAKE_LEFT => -- read odd row into buffer 1
+                if col_cnt /= 16x"0" then
+                    col_cnt_add <= (others => '1'); -- negative 1
+                end if;
+                mem_we_1(0) <= '1';
+                en          <= '1';
+                buf_re      <= '1';
+                win_shift   <= '1';
+                win_dir     <= '1';
+                centre_col  <= std_logic_vector(unsigned(col_cnt) + 1);
+                if col_cnt /= LAST_COL then -- first word of the row has no centre yet
+                    out_buf_en <= '1';
+                end if;
+
+            when SNAKE_DOWN_0 => -- last shift of an odd row: centre = column 0
+                row_cnt_add <= WORDS_PER_ROW;
+                win_shift   <= '1';
+                win_dir     <= '1';
+                centre_col  <= 16x"0";
+                out_buf_en  <= '1';
+
+            when SNAKE_RIGHT => -- read even row into buffer 0
+                if col_cnt /= LAST_COL then
+                    col_cnt_add <= 16x"1";
+                end if;
+                mem_we_0(0) <= '1';
+                en          <= '1';
+                buf_re      <= '1';
+                win_shift   <= '1';
+                win_dir     <= '0';
+                centre_col  <= std_logic_vector(unsigned(col_cnt) - 1);
+                if col_cnt /= 16x"0" then -- first word of the row has no centre yet
+                    out_buf_en <= '1';
+                end if;
+
+            when SNAKE_DOWN_1 => -- last shift of an even row: centre = column 87
+                row_cnt_add <= WORDS_PER_ROW;
+                win_shift   <= '1';
+                win_dir     <= '0';
+                centre_col  <= LAST_COL;
+                out_buf_en  <= '1';
+
+            when END_CALC => -- only the line buffers (rows 286, 287), bottom row replicated by the window
+                if col_cnt /= LAST_COL then
+                    col_cnt_add <= 16x"1";
+                end if;
+                buf_re      <= '1';
+                win_shift   <= '1';
+                win_dir     <= '0';
+                centre_col  <= std_logic_vector(unsigned(col_cnt) - 1);
+                if col_cnt /= 16x"0" then
+                    out_buf_en <= '1';
+                end if;
+
+            when END_JUMP =>
+                win_shift   <= '1';
+                win_dir     <= '0';
+                centre_col  <= LAST_COL;
+                out_buf_en  <= '1';
+
+            when CALC_FINISH =>
+                finish <= '1';
+
+            when others =>
+                null;
+
+        end case;
+    end process;
+
+    addr_re <= std_logic_vector(unsigned(col_cnt) + unsigned(row_cnt)); -- row_cnt is already multiplied by 88
+    addr_we <= std_logic_vector(unsigned(trans_cnt) + 16x"62FF");
+    dataW <= data_buf;
+
+    -- Connecting the memory ports
+    ibuf_rd_en <= en;
+    ibuf_rd_addr <= addr_re;
+    --ibuf_rd_data connected elsewhere
+
+    obuf_wr_en <= out_buf_en_ddd;
+    obuf_wr_addr <= addr_out_buf;
+    obuf_wr_data <= buf_in;
+
+    --------------------------------------------
+    -- Image buffers.
+    -- Two Identical memory modules that stores 1 row each.
+    -- Addr (0 - 87)
+    -- Both are read every cycle at the current column, the
+    -- write happens one cycle later (when ibuf_rd_data arrives).
+    --------------------------------------------
+    pixel_buffer_0 : entity work.bram
+        generic map (
+            ADDR_W => 7,
+            DATA_W => 32
+        )
+
+        port map (
+            clk     => clk,
+            we      => mem_we_0(1),
+            waddr   => mem_write_addr(6 downto 0),
+            din     => mem_write_data,
+            re      => buf_re,
+            raddr   => col_cnt(6 downto 0),
+            dout    => mem_read_data_0
+        );
+
+    pixel_buffer_1 : entity work.bram
+        generic map (
+            ADDR_W => 7,
+            DATA_W => 32
+        )
+
+        port map (
+            clk     => clk,
+            we      => mem_we_1(1),
+            waddr   => mem_write_addr(6 downto 0),
+            din     => mem_write_data,
+            re      => buf_re,
+            raddr   => col_cnt(6 downto 0),
+            dout    => mem_read_data_1
+        );
+
+    --------------------------------------------
+    -- 3x3 word window with boundary handling
+    --------------------------------------------
+    window_inst : entity work.window
+        port map (
+            clk       => clk,
+            reset     => rst_n,
+            shift_en  => win_shift_d,
+            dir       => win_dir_d,
+            row_cnt   => centre_row_dd,
+            col_cnt   => centre_col_dd,
+            mem_buf_0 => mem_read_data_0,
+            mem_buf_1 => mem_read_data_1,
+            mem_input => ibuf_rd_data,
+            pixels    => window_pixels
+        );
+
+    ----------------------------------------------------------------
+    -- Initiate 4 instances of the pixel calculaters.
+    -- Each gets the 3x3 neighbourhood of one pixel in the centre word.
+    ----------------------------------------------------------------
+    gen_pix_calc : for i in 0 to 3 generate
+        calc_in(i) <= pix_window(window_pixels, i);
+
+        u_pix_calc : entity work.pix_calc
+            port map(
+                pixels     => calc_in(i),
+                pix_result => pix_results(8 * i + 7 downto 8 * i)
+            );
+    end generate;
+
+end rtl;
+
