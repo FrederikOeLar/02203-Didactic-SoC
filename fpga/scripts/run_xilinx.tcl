@@ -62,9 +62,13 @@ if { [info exists ::env(ACC_LANG)] } {
   set ACC_LANG sv
 }
 if { $ACC_LANG eq "vhdl" } {
+  add_files -norecurse $DIR/../src/rtl/types.vhd
+  add_files -norecurse $DIR/../src/rtl/window.vhd
+  add_files -norecurse $DIR/../src/rtl/Pix_Calc.vhd
+  add_files -norecurse $DIR/../src/rtl/Out_Buf.vhd
   add_files -norecurse $DIR/../src/rtl/pixel_acc_vhd_wrapper.sv
   add_files -norecurse $DIR/../src/rtl/pixel_acc_vhd.vhd
-  set_property file_type {VHDL 2008} [get_files pixel_acc_vhd.vhd]
+  set_property file_type {VHDL 2008} [get_files [list types.vhd window.vhd Pix_Calc.vhd Out_Buf.vhd pixel_acc_vhd.vhd]]
 } elseif { $ACC_LANG eq "sv" } {
   add_files -norecurse $DIR/../src/rtl/pixel_acc.sv
 } else {
